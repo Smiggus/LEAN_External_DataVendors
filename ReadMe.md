@@ -32,7 +32,7 @@ Ensure that this file is properly configured before running the notebook to avoi
 For more detailed instructions, refer to the comments within the notebook.
 
 ## Upcoming Improvements:
-- Add support for more data feeds and APIs. (WRDS is next)
+- [In Progress] WRDS API Support - Pending new WRDS SQL Query
 - Add support for equity options, fx and futures data.
 - Add support for different types of equity data (e.g. higher resolution, fundamental data, etc.)
 - Add support for further databento formats
