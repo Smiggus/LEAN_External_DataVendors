@@ -37,4 +37,15 @@ For more detailed instructions, refer to the comments within the notebook.
 - Add support for different types of equity data (e.g. higher resolution, fundamental data, etc.)
 - Add support for further databento formats
 
+
+# Notes 
 Last update: 26SEP24
+Daily data is working using databento_test.ipynb
+To do next is to convert to a .py file, add the questdb integration and test it
+Finally dagsterize this pipeline
+
+# Usage Instructions
+After running databento_test on your desired ticker
+Drop the ticker.zip into /data/equity/usa/daily/
+Run the following command in the terminal
+```lean backtest "localdatatest_spy" --data-provider-historical Local```
