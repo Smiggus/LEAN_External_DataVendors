@@ -70,6 +70,14 @@ def download_and_convert(tickers, start_date, end_date, frequency='daily'):
     # Initialize Data Bento client
     client = db.Historical(os.getenv('databento_api_key'))
     for ticker in tickers:
+        # CSV File variable
+        csv_file = f'databento/downloads/{ticker}_data.csv'
+        
+        # Remove the existing file if it exists
+        if os.path.exists(csv_file):
+            # open the file and get the dates
+            os.remove(csv_file)
+        
         dataset = client.timeseries.get_range(
             dataset='XNAS.ITCH',
             symbols=ticker,
@@ -86,4 +94,4 @@ def download_and_convert(tickers, start_date, end_date, frequency='daily'):
 # Example ticker list and date range
 if __name__ == '__main__':
     ticker_list = ['QQQ']
-    download_and_convert(ticker_list, '2024-01-01', '2024-06-01', 'daily')
+    download_and_convert(ticker_list, '2024-06-01', '2024-09-01', 'daily')
