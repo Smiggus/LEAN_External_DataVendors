@@ -7,6 +7,8 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.types import BigInteger, DateTime, Float
 import zipfile
+from sqlalchemy.types import TIMESTAMP
+import pytz
 
 ''' 
 Python Script to download data from Data Bento and convert it to LEAN format.
@@ -66,7 +68,7 @@ def upload_to_postgresql(df, ticker, schema='databento_ohlcv'):
     try:
         # Define data types for SQL columns
         dtype = {
-            'ts_event': DateTime(),
+            'ts_event': TIMESTAMP(timezone=True),
             'open': Float(),
             'high': Float(),
             'low': Float(),
@@ -104,9 +106,8 @@ def get_existing_dates_from_postgresql(ticker, schema='databento_ohlcv'):
             # Table exists, retrieve existing dates
             query = f'SELECT DISTINCT ts_event::date FROM "{schema}"."{ticker}"'
             df_existing = pd.read_sql(query, con=engine)
-            df_existing['ts_event'] = pd.to_datetime(df_existing['ts_event'])
+            df_existing['ts_event'] = pd.to_datetime(df_existing['ts_event'],utc=True)
             dates = pd.DatetimeIndex(df_existing['ts_event'].sort_values())
-            dates = dates.tz_localize(None)
             return dates
         else:
             return None
@@ -135,6 +136,10 @@ def get_data_from_postgresql(ticker, start_date=None, end_date=None, schema='dat
         if start_date is not None and end_date is not None:
             query += f" WHERE ts_event BETWEEN '{start_date.strftime('%Y-%m-%d')}' AND '{end_date.strftime('%Y-%m-%d')}'"
         df = pd.read_sql(query, con=engine)
+        
+        # Ensure ts_event is parsed as timezone-aware datetime
+        df['ts_event'] = pd.to_datetime(df['ts_event'], utc=True)
+        
         return df
     except Exception as e:
         print(f"Error retrieving data for {ticker} from PostgreSQL: {e}")
@@ -143,8 +148,8 @@ def get_data_from_postgresql(ticker, start_date=None, end_date=None, schema='dat
         engine.dispose()
 
 def convert_to_lean_format(df, ticker, frequency='daily'):
-    # Convert 'ts_event' to the required date format
-    df['date'] = pd.to_datetime(df['ts_event']).dt.strftime('%Y%m%d %H:%M')
+    # Convert 'ts_event' to America/New_York timezone and required date format
+    df['date'] = df['ts_event'].dt.tz_convert('America/New_York').dt.strftime('%Y%m%d %H:%M')
 
     # Select required columns without copying
     df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
@@ -185,10 +190,18 @@ def download_and_append_data(ticker, start_date, end_date, frequency='daily'):
     # Convert start_date and end_date to datetime objects
     start_date = pd.to_datetime(start_date)
     end_date = pd.to_datetime(end_date)
+    
+    # Localize the datetime to NY time (exchange time zone)
+    start_date = start_date.tz_localize('America/New_York').astimezone(pytz.utc)
+    end_date = end_date.tz_localize('America/New_York').astimezone(pytz.utc)
 
     # Fetch existing dates from PostgreSQL
     dates = get_existing_dates_from_postgresql(ticker)
-
+    
+    # Ensure dates are in UTC
+    if dates is not None:
+        dates = dates.tz_convert('UTC')
+    
     # If dates is None or date range is not covered
     if dates is None or start_date.date() < dates[0].date() or end_date.date() > dates[-1].date():
         print(f'Fetching data for {ticker} from {start_date.date()} to {end_date.date()}')
@@ -207,6 +220,7 @@ def download_and_append_data(ticker, start_date, end_date, frequency='daily'):
             if dates is not None:
                 # Fetch existing data
                 df_existing = get_data_from_postgresql(ticker)
+                df_existing['ts_event'] = pd.to_datetime(df_existing['ts_event'], utc=True)
                 # Ensure ts_event is not set as index
                 if df_existing.index.name == 'ts_event':
                     df_existing.reset_index(inplace=True)
@@ -214,6 +228,7 @@ def download_and_append_data(ticker, start_date, end_date, frequency='daily'):
                 # Combine data and remove duplicates based on ts_event
                 df_combined = pd.concat([df_existing, df_new], ignore_index=True)
                 df_combined.drop_duplicates(subset='ts_event', keep='last', inplace=True)
+                df_combined['ts_event'] = pd.to_datetime(df_combined['ts_event'], utc=True)
                 df_combined.sort_values(by='ts_event', inplace=True)
                 # Upload the amended data to PostgreSQL
                 upload_to_postgresql(df_combined, ticker)
@@ -235,6 +250,9 @@ def download_and_append_data(ticker, start_date, end_date, frequency='daily'):
         if df.index.name == 'ts_event':
             df.reset_index(inplace=True)
 
+        # Ensure ts_event is timezone-aware
+        df['ts_event'] = pd.to_datetime(df['ts_event'], utc=True)
+
         # Convert to LEAN format
         convert_to_lean_format(df, ticker, frequency)
         print(f'Data for {ticker} fetched from postgres, converted to LEAN format.')
@@ -248,4 +266,4 @@ def download_and_append_data(ticker, start_date, end_date, frequency='daily'):
 if __name__ == '__main__':
     ticker_list = ['QQQ']
     for ticker in ticker_list:
-        download_and_append_data(ticker, '2023-01-01', '2023-08-31', frequency='daily')
+        download_and_append_data(ticker, '2023-09-01', '2023-12-31', frequency='daily')
