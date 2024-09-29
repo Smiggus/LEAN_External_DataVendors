@@ -37,6 +37,38 @@ def get_data_from_databento(ticker, start_date, end_date):
     df = dataset.to_df()
     return df
 
+def upload_to_postgresql(df, ticker, schema='databento_ohlcv'):
+    """
+    Uploads a DataFrame to a PostgreSQL database using SQLAlchemy.
+    
+    Args:
+        df (pd.DataFrame): The DataFrame containing OHLCV data.
+        ticker (str): The stock ticker symbol (used to name the table).
+        schema (str): The schema where the table should be created. Default is 'databento_ohlcv'.
+    
+    Returns:
+        None
+    """
+    # Fetch credentials from environment variables
+    pguser = os.getenv('pguser')
+    pgpass = os.getenv('pgpass')
+    pghost = os.getenv('pghost')
+    
+    # Database connection URL using environment variables
+    db_url = f'postgresql://{pguser}:{pgpass}@{pghost}/FinancialData'
+    engine = create_engine(db_url)
+
+    try:
+        # Write the DataFrame to the PostgreSQL table
+        df.to_sql(ticker, engine, schema=schema, if_exists='replace', index=False)
+        print(f"Data for {ticker} uploaded successfully to {schema}.{ticker}.")
+    
+    except SQLAlchemyError as e:
+        print(f"Error uploading data for {ticker} to PostgreSQL: {e}")
+    
+    finally:
+        engine.dispose()
+
 # testing convert_utc_to_ny time
 def convert_utc_to_ny(df, datetime_column='ts_event'):
     """
@@ -96,7 +128,11 @@ def convert_to_lean_format(csv_file, ticker, frequency='daily'):
         output_file = f"{output_dir}{(ticker.lower())}.csv"
     
     df.to_csv(output_file, index=False, header=False)
-        
+    
+    # Upload this to PostgreSQL Schema: qc_eqty_daily.ticker
+    # Causing an error, unsigned 64bit integer datatype is not supported
+    #upload_to_postgresql(df, ticker, schema='qc_eqty_daily')
+    
     # Zip File
     zip_file = os.path.join(output_dir, f'{ticker.lower()}.zip')
     # Create a zip file and add the csv file to it
@@ -157,10 +193,13 @@ def download_and_append_data(ticker, start_date, end_date, folder='databento/dow
                 df_combined = pd.concat([df_existing, df_new]).drop_duplicates()
                 df_combined.sort_index(inplace=True)
                 df_combined.to_csv(path)
-
+                # Upload the amended data to PostgreSQL
+                upload_to_postgresql(df_combined, ticker)
             else:
                 # Save the new data if no file exists
                 df_new.to_csv(path)
+                # Upload the new data to PostgreSQL
+                upload_to_postgresql(df_new, ticker)
             print(f'Ticker {ticker} data saved to {path}')
         
         except Exception as e:
@@ -176,6 +215,6 @@ def download_and_append_data(ticker, start_date, end_date, folder='databento/dow
 
 # Example ticker list and date range
 if __name__ == '__main__':
-    ticker_list = ['IWM']
+    ticker_list = ['QQQ']
     for ticker in ticker_list:
-        download_and_append_data(ticker, '2023-01-01', '2023-12-31', frequency='daily')
+        download_and_append_data(ticker, '2023-01-01', '2023-08-31', frequency='daily')
