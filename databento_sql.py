@@ -1,29 +1,21 @@
 import databento as db
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
-from pathlib import Path
-import zipfile
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.types import BigInteger, DateTime, Float
+import zipfile
 
-''' Python Script to download data form data bento and convert it to LEAN format 
-    Requires manual saving/moving to the lean data directory within Algos folder
-    
-    To add:
-    Overwrite if file exists logic - Take from the medium article tbh - TBD 28SEP24
-    '''
+''' 
+Python Script to download data from Data Bento and convert it to LEAN format.
+Ensures that ts_event is included as a standard column when uploading to PostgreSQL.
+'''
 
 def get_data_from_databento(ticker, start_date, end_date):
     """
     Fetches OHLCV data for a given ticker from Data Bento for the specified date range.
-    Args:
-        ticker (str): The stock ticker symbol.
-        start_date (datetime): The start date of the data to retrieve.
-        end_date (datetime): The end date of the data to retrieve.
-    
-    Returns:
-        pd.DataFrame: A DataFrame containing the retrieved data.
     """
     client = db.Historical(os.getenv('databento_api_key'))
     dataset = client.timeseries.get_range(
@@ -33,89 +25,133 @@ def get_data_from_databento(ticker, start_date, end_date):
         end=end_date.strftime('%Y-%m-%d'),
         schema='ohlcv-1d'
     )
-    
     df = dataset.to_df()
+
+    # Identify uint64 columns
+    uint64_cols = df.select_dtypes(include=['uint64']).columns.tolist()
+    if uint64_cols:
+        print(f"Converting uint64 columns to int64: {uint64_cols}")
+        # Ensure values are within int64 range
+        for col in uint64_cols:
+            if df[col].max() > np.iinfo('int64').max:
+                print(f"Warning: Values in column {col} exceed int64 range. Converting to float.")
+                df[col] = df[col].astype('float64')
+            else:
+                df[col] = df[col].astype('int64')
+
+    # Ensure ts_event is not the index
+    if df.index.name == 'ts_event':
+        df.reset_index(inplace=True)
+
     return df
 
 def upload_to_postgresql(df, ticker, schema='databento_ohlcv'):
     """
     Uploads a DataFrame to a PostgreSQL database using SQLAlchemy.
-    
-    Args:
-        df (pd.DataFrame): The DataFrame containing OHLCV data.
-        ticker (str): The stock ticker symbol (used to name the table).
-        schema (str): The schema where the table should be created. Default is 'databento_ohlcv'.
-    
-    Returns:
-        None
+    Ensures that ts_event is included as a standard column.
     """
+    # Ensure ts_event is a column and not the index
+    if 'ts_event' not in df.columns:
+        df.reset_index(inplace=True)
+
     # Fetch credentials from environment variables
     pguser = os.getenv('pguser')
     pgpass = os.getenv('pgpass')
     pghost = os.getenv('pghost')
-    
+
     # Database connection URL using environment variables
     db_url = f'postgresql://{pguser}:{pgpass}@{pghost}/FinancialData'
     engine = create_engine(db_url)
 
     try:
+        # Define data types for SQL columns
+        dtype = {
+            'ts_event': DateTime(),
+            'open': Float(),
+            'high': Float(),
+            'low': Float(),
+            'close': Float(),
+            'volume': BigInteger(),
+            # Add other columns if necessary
+        }
+
         # Write the DataFrame to the PostgreSQL table
-        df.to_sql(ticker, engine, schema=schema, if_exists='replace', index=False)
+        df.to_sql(ticker, engine, schema=schema, if_exists='replace', index=False, dtype=dtype)
         print(f"Data for {ticker} uploaded successfully to {schema}.{ticker}.")
-    
     except SQLAlchemyError as e:
         print(f"Error uploading data for {ticker} to PostgreSQL: {e}")
-    
     finally:
         engine.dispose()
 
-# testing convert_utc_to_ny time
-def convert_utc_to_ny(df, datetime_column='ts_event'):
+def get_existing_dates_from_postgresql(ticker, schema='databento_ohlcv'):
     """
-    Convert a datetime column from UTC to New York time (Eastern Time).
-    
-    Args:
-        df (pd.DataFrame): The DataFrame containing the datetime column in UTC.
-        datetime_column (str): The name of the datetime column to be converted. Defaults to 'ts_event'.
-    
-    Returns:
-        pd.DataFrame: The DataFrame with the converted New York time column.
+    Retrieves the existing dates for a given ticker from PostgreSQL database.
     """
-    # Ensure the datetime column is in UTC timezone
-    df[datetime_column] = pd.to_datetime(df[datetime_column])
-    try:
-        df[datetime_column] = df[datetime_column].dt.tz_localize('UTC')  # Localize to UTC
-    except:
-        # Do nothing, we want it to convert first
-        pass
-    # Convert the UTC time to New York time (Eastern Time)
-    df[datetime_column] = df[datetime_column].dt.tz_convert('America/New_York')
-    
-    return df
+    # Fetch credentials from environment variables
+    pguser = os.getenv('pguser')
+    pgpass = os.getenv('pgpass')
+    pghost = os.getenv('pghost')
 
-def convert_to_lean_format(csv_file, ticker, frequency='daily'):
-    '''
-    Converts a CSV file containing stock data into a format compatible with LEAN Local CLI Framework.
-    Args:
-        csv_file (str): The path to the input CSV file containing stock data.
-        ticker (str): The stock ticker symbol.
-        frequency (str, optional): The frequency of the data. Can be 'daily', 'hourly', or 'minute'. Defaults to 'daily'.
-    Returns:
-        None: The function saves the converted data to a file in the appropriate directory based on the frequency. Located within project directory.
-    '''
-    # Read the Loaded CSV File
-    df = pd.read_csv(csv_file)
-    
-    # Convert the time to NY time (exchange time zone) Optional, still deciding if needed
-    #convert_utc_to_ny(df, datetime_column='ts_event')
-    
-    # Strip the extra time info from CONVERTED time zone to match lean format
-    df['date'] = pd.to_datetime(df.pop('ts_event')).dt.strftime('%Y%m%d %H:%M')
+    # Database connection URL using environment variables
+    db_url = f'postgresql://{pguser}:{pgpass}@{pghost}/FinancialData'
+    engine = create_engine(db_url)
+
+    try:
+        # Check if table exists
+        inspector = inspect(engine)
+        tables = inspector.get_table_names(schema=schema)
+        if ticker in tables:
+            # Table exists, retrieve existing dates
+            query = f'SELECT DISTINCT ts_event::date FROM "{schema}"."{ticker}"'
+            df_existing = pd.read_sql(query, con=engine)
+            df_existing['ts_event'] = pd.to_datetime(df_existing['ts_event'])
+            dates = pd.DatetimeIndex(df_existing['ts_event'].sort_values())
+            dates = dates.tz_localize(None)
+            return dates
+        else:
+            return None
+    except Exception as e:
+        print(f"Error retrieving existing dates for {ticker}: {e}")
+        return None
+    finally:
+        engine.dispose()
+
+def get_data_from_postgresql(ticker, start_date=None, end_date=None, schema='databento_ohlcv'):
+    """
+    Retrieves data for a given ticker from PostgreSQL database, optionally within a date range.
+    """
+    # Fetch credentials from environment variables
+    pguser = os.getenv('pguser')
+    pgpass = os.getenv('pgpass')
+    pghost = os.getenv('pghost')
+
+    # Database connection URL using environment variables
+    db_url = f'postgresql://{pguser}:{pgpass}@{pghost}/FinancialData'
+    engine = create_engine(db_url)
+
+    try:
+        # Build the query
+        query = f'SELECT * FROM "{schema}"."{ticker}"'
+        if start_date is not None and end_date is not None:
+            query += f" WHERE ts_event BETWEEN '{start_date.strftime('%Y-%m-%d')}' AND '{end_date.strftime('%Y-%m-%d')}'"
+        df = pd.read_sql(query, con=engine)
+        return df
+    except Exception as e:
+        print(f"Error retrieving data for {ticker} from PostgreSQL: {e}")
+        return None
+    finally:
+        engine.dispose()
+
+def convert_to_lean_format(df, ticker, frequency='daily'):
+    # Convert 'ts_event' to the required date format
+    df['date'] = pd.to_datetime(df['ts_event']).dt.strftime('%Y%m%d %H:%M')
+
+    # Select required columns without copying
     df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
-    
-    # Conversion from dollars to deci-cents
-    df[['open', 'high', 'low', 'close']] = (df[['open', 'high', 'low', 'close']] * 10000).astype(int)
-    
+
+    # Use .loc for assignment to avoid the warning
+    df.loc[:, ['open', 'high', 'low', 'close']] = (df[['open', 'high', 'low', 'close']] * 10000).astype(int)
+
     # Data type sorting for directory saving for csv
     if frequency == 'daily':
         output_dir = 'data/equity/usa/daily/'
@@ -125,91 +161,86 @@ def convert_to_lean_format(csv_file, ticker, frequency='daily'):
         output_file = f"{output_dir}{ticker.lower()}.csv"
     else:
         output_dir = 'data/equity/usa/minute/'
-        output_file = f"{output_dir}{(ticker.lower())}.csv"
-    
+        output_file = f"{output_dir}{ticker.lower()}.csv"
+
+    # Ensure the output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
     df.to_csv(output_file, index=False, header=False)
-    
-    # Upload this to PostgreSQL Schema: qc_eqty_daily.ticker
-    # Causing an error, unsigned 64bit integer datatype is not supported
-    #upload_to_postgresql(df, ticker, schema='qc_eqty_daily')
-    
-    # Zip File
+
+    # Zip the CSV file
     zip_file = os.path.join(output_dir, f'{ticker.lower()}.zip')
-    # Create a zip file and add the csv file to it
     with zipfile.ZipFile(zip_file, 'w') as zf:
         zf.write(output_file, arcname=f'{ticker.lower()}.csv')
 
     # Optionally, remove the csv file after zipping (if you want the zip to be the only output)
-    #os.remove(csv_file)
+    # os.remove(output_file)
 
     print(f"{output_file} has been successfully zipped into {zip_file}.")
-    
-def download_and_append_data(ticker, start_date, end_date, folder='databento/downloads', frequency='daily'):
-    """
-    Downloads and appends stock data from Data Bento API if necessary, then converts the data to QuantConnect format.
-    Args:
-        ticker (str): The stock ticker symbol.
-        start_date (str): The start date for data retrieval.
-        end_date (str): The end date for data retrieval.
-        folder (str): Folder to save the CSV file.
-        frequency (str): Data frequency ('daily', 'hourly', 'minute').
-    
-    Returns:
-        str: The ticker symbol.
-    """
-    # Define file path for the ticker - Saves the databento download file
-    #fname = ticker.lower() + '.csv'
-    fname = f'{ticker}_data.csv'
-    path = Path(folder) / fname
 
+def download_and_append_data(ticker, start_date, end_date, frequency='daily'):
+    """
+    Downloads and appends stock data from Data Bento API if necessary, then converts the data to LEAN format.
+    """
     # Convert start_date and end_date to datetime objects
     start_date = pd.to_datetime(start_date)
     end_date = pd.to_datetime(end_date)
 
-    # Check if the file exists
-    if path.exists():
-        # Open the file and retrieve existing dates
-        df_existing = pd.read_csv(path, index_col=0)
-        df_existing.index = pd.to_datetime(df_existing.index)  # Ensure the index is converted to Timestamps
-        dates = pd.DatetimeIndex(df_existing.index.sort_values(ascending=True))
-        
-        # Convert the existing dates to tz-naive (remove timezone)
-        dates = dates.tz_localize(None)
-    else:
-        dates = None
+    # Fetch existing dates from PostgreSQL
+    dates = get_existing_dates_from_postgresql(ticker)
 
-    # If no file or date range is not covered
-    if dates is None or start_date < dates[0] or end_date > dates[-1]:
-        print(f'Fetching data for {ticker} from {start_date} to {end_date}')
-        
+    # If dates is None or date range is not covered
+    if dates is None or start_date.date() < dates[0].date() or end_date.date() > dates[-1].date():
+        print(f'Fetching data for {ticker} from {start_date.date()} to {end_date.date()}')
+
         # Attempt to fetch new data from Data Bento
         try:
             # Add buffer (delta) to the date range to handle overlaps
             delta = timedelta(days=3)
             df_new = get_data_from_databento(ticker, start_date - delta, end_date + delta)
-            
-            # If file exists, append new data
-            if path.exists():
-                df_combined = pd.concat([df_existing, df_new]).drop_duplicates()
-                df_combined.sort_index(inplace=True)
-                df_combined.to_csv(path)
+
+            # Ensure ts_event is not set as index
+            if df_new.index.name == 'ts_event':
+                df_new.reset_index(inplace=True)
+
+            # If data exists in the database, append new data
+            if dates is not None:
+                # Fetch existing data
+                df_existing = get_data_from_postgresql(ticker)
+                # Ensure ts_event is not set as index
+                if df_existing.index.name == 'ts_event':
+                    df_existing.reset_index(inplace=True)
+
+                # Combine data and remove duplicates based on ts_event
+                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+                df_combined.drop_duplicates(subset='ts_event', keep='last', inplace=True)
+                df_combined.sort_values(by='ts_event', inplace=True)
                 # Upload the amended data to PostgreSQL
                 upload_to_postgresql(df_combined, ticker)
             else:
-                # Save the new data if no file exists
-                df_new.to_csv(path)
                 # Upload the new data to PostgreSQL
                 upload_to_postgresql(df_new, ticker)
-            print(f'Ticker {ticker} data saved to {path}')
-        
+            print(f'Ticker {ticker} data updated in PostgreSQL')
+
         except Exception as e:
             print(f'Error fetching data for {ticker}: {e}')
             return None
     else:
         print(f'Ticker {ticker} already up-to-date')
 
-    # Convert to QuantConnect format (path = path to csv file incl. .csv, ticker = ticker symbol, frequency = 'daily', 'hourly', 'minute')
-    convert_to_lean_format(path, ticker, frequency)
+    # Fetch the data from PostgreSQL for the required date range
+    df = get_data_from_postgresql(ticker, start_date, end_date)
+    if df is not None and not df.empty:
+        # Ensure ts_event is not set as index
+        if df.index.name == 'ts_event':
+            df.reset_index(inplace=True)
+
+        # Convert to LEAN format
+        convert_to_lean_format(df, ticker, frequency)
+        print(f'Data for {ticker} fetched from postgres, converted to LEAN format.')
+    else:
+        print(f"No data available for {ticker} to convert.")
+        return None
 
     return ticker
 
