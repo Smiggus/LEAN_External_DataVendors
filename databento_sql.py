@@ -10,7 +10,7 @@ import zipfile
 
 ''' 
 Python Script to download data from Data Bento and convert it to LEAN format.
-Ensures that ts_event is included as a standard column when uploading to PostgreSQL.
+If the data already exists, then it will be fetched from the PostgreSQL database instead of databento
 '''
 
 def get_data_from_databento(ticker, start_date, end_date):
