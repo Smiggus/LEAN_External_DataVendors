@@ -1,0 +1,7 @@
+ops:
+  process_ticker_graph:
+    inputs:
+      ticker: 'QQQ'
+      start_date_str: '2023-09-01'
+      end_date_str: '2023-12-31'
+      frequency: 'daily'

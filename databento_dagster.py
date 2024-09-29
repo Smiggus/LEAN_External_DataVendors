@@ -10,12 +10,15 @@ import zipfile
 from sqlalchemy.types import TIMESTAMP
 import pytz
 
+from dagster import op, job
+
 ''' 
-Python Script to download data from Data Bento and convert it to LEAN format.
-If the data already exists, then it will be fetched from the PostgreSQL database instead of databento
+Dagster version of databento_sql.py
+WIP 29SEP24
 '''
 
-def get_data_from_databento(ticker, start_date, end_date):
+@op
+def get_data_from_databento(ticker, start_date, end_date) -> pd.DataFrame:
     """
     Fetches OHLCV data for a given ticker from Data Bento for the specified date range.
     """
