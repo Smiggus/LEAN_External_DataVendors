@@ -134,6 +134,12 @@ def get_data_from_postgresql(ticker, start_date=None, end_date=None, schema='dat
         # Build the query
         query = f'SELECT * FROM "{schema}"."{ticker}"'
         if start_date is not None and end_date is not None:
+            # Convert date string to datetime object
+            if not isinstance(start_date, datetime):
+                start_date = datetime.strptime(start_date, '%Y-%m-%d')
+            if not isinstance(end_date, datetime):
+                end_date = datetime.strptime(end_date, '%Y-%m-%d')
+            
             query += f" WHERE ts_event BETWEEN '{start_date.strftime('%Y-%m-%d')}' AND '{end_date.strftime('%Y-%m-%d')}'"
         df = pd.read_sql(query, con=engine)
         
