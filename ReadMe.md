@@ -8,7 +8,7 @@ This repository contains scripts and notebooks for handling external data feeds 
 This Jupyter notebook is designed to test and demonstrate the functionality of the Databento API. It includes examples of how to fetch and process data using the API.
 
 ### `lean_converter.ipynb`
-This Jupyter notebook is designed to convert data fetched from the Databento API into a format that is compatible with LEAN. It includes examples of how to clean and format the data for use in the algorithmic trading engine.
+This Jupyter notebook is designed to convert data fetched from the Databento API into a format that is compatible with LEAN. It includes examples of how to clean and format the data for use in the algorithmic trading engine for local backtesting.
 
 ## Scripts
 ### `databento_pipe.py`
